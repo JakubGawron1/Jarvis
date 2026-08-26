@@ -10,15 +10,20 @@ use axum::{
 use futures_util::{SinkExt, StreamExt};
 use jarvis_core::AgentHandle;
 use jarvis_protocol::{ClientMessage, ServerMessage, CORE_VERSION, DEFAULT_BIND};
+use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::Arc;
 use sysinfo::System;
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, mpsc, Mutex};
 use tower_http::cors::CorsLayer;
 
+mod peer;
+
 struct AppState {
-    agent: AgentHandle,
-    tx: broadcast::Sender<String>,
+    pub agent: AgentHandle,
+    pub tx: broadcast::Sender<String>,
+    pub routes: Mutex<HashMap<String, mpsc::UnboundedSender<String>>>,
+    pub recent: Mutex<VecDeque<u64>>,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -42,7 +47,13 @@ async fn async_main() -> anyhow::Result<()> {
     let token = std::env::var("JARVIS_PAIRING_TOKEN").unwrap_or_default();
 
     let (tx, _) = broadcast::channel(64);
-    let state = Arc::new(AppState { agent, tx });
+    let state = Arc::new(AppState {
+        agent,
+        tx,
+        routes: Mutex::new(HashMap::new()),
+        recent: Mutex::new(VecDeque::new()),
+    });
+    peer::spawn(state.clone());
 
     let app = Router::new()
         .route("/ws", get(ws_handler))
@@ -90,6 +101,8 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
     let token = std::env::var("JARVIS_PAIRING_TOKEN").unwrap_or_default();
     let (mut sender, mut receiver) = socket.split();
     let mut rx = state.tx.subscribe();
+    let (push_tx, mut push_rx) = mpsc::unbounded_channel::<String>();
+    let mut bound: Option<String> = None;
 
     {
         for m in state.agent.presence_hello() {
@@ -115,18 +128,41 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
                         }
                         match ClientMessage::parse(&t) {
                             Ok(msg) => {
+                                match &msg {
+                                    ClientMessage::Hello { device } => {
+                                        bound = Some(device.id.clone());
+                                        state.routes.lock().await.insert(device.id.clone(), push_tx.clone());
+                                    }
+                                    ClientMessage::Text { device_id: Some(d), .. }
+                                    | ClientMessage::Utterance { device_id: Some(d), .. } => {
+                                        bound = Some(d.clone());
+                                        state.routes.lock().await.insert(d.clone(), push_tx.clone());
+                                    }
+                                    ClientMessage::PeerDeliver { device_id, json } => {
+                                        let routes = state.routes.lock().await;
+                                        if let Some(tx) = routes.get(device_id) {
+                                            let _ = tx.send(json.clone());
+                                        }
+                                        continue;
+                                    }
+                                    ClientMessage::Relay { frame } => {
+                                        if peer::remember(&state.recent, frame).await {
+                                            let _ = state.tx.send(frame.clone());
+                                        }
+                                        continue;
+                                    }
+                                    _ => {}
+                                }
                                 let replies = state.agent.handle(msg).await;
                                 for r in replies {
                                     let json = r.to_json();
-                                    if fanout_all(&r) {
-                                        // Presence / mesh — every HUD. This socket is already on `rx`.
+                                    if fanout_kind(&r) {
                                         if state.tx.send(json.clone()).is_err() {
                                             if sender.send(Message::Text(json.into())).await.is_err() {
                                                 return;
                                             }
                                         }
                                     } else if sender.send(Message::Text(json.into())).await.is_err() {
-                                        // Reply / speech / visual — only the device that asked.
                                         return;
                                     }
                                 }
@@ -140,13 +176,23 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
                     Some(Ok(Message::Ping(p))) => {
                         let _ = sender.send(Message::Pong(p)).await;
                     }
-                    Some(Ok(Message::Close(_))) | None => return,
+                    Some(Ok(Message::Close(_))) | None => {
+                        if let Some(id) = bound.take() {
+                            state.routes.lock().await.remove(&id);
+                        }
+                        return;
+                    }
                     Some(Err(_)) => return,
                     _ => {}
                 }
             }
             Ok(broadcasted) = rx.recv() => {
                 if sender.send(Message::Text(broadcasted.into())).await.is_err() {
+                    return;
+                }
+            }
+            Some(targeted) = push_rx.recv() => {
+                if sender.send(Message::Text(targeted.into())).await.is_err() {
                     return;
                 }
             }
@@ -203,7 +249,7 @@ fn bind_addr_from(jarvis_bind: Option<&str>, port: Option<&str>, kind: Option<&s
     DEFAULT_BIND.into()
 }
 
-fn fanout_all(msg: &ServerMessage) -> bool {
+pub(crate) fn fanout_kind(msg: &ServerMessage) -> bool {
     matches!(
         msg,
         ServerMessage::Presence { .. }
@@ -214,6 +260,8 @@ fn fanout_all(msg: &ServerMessage) -> bool {
             | ServerMessage::CoreUpdate { .. }
             | ServerMessage::HandoffReady { .. }
             | ServerMessage::Pong {}
+            | ServerMessage::Visual { .. }
+            | ServerMessage::MeshSync { .. }
     )
 }
 

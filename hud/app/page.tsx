@@ -14,6 +14,7 @@ import {
   waitForSocket,
   withToken,
 } from "./lib/uplink";
+import { takeVisual } from "./lib/visualTag";
 
 const VisualStage = dynamic(() => import("./components/VisualStage"), { ssr: false });
 const ArcReactor = dynamic(() => import("./components/ArcReactor"), { ssr: false });
@@ -23,7 +24,7 @@ type Msg = { role: "user" | "jarvis" | "sys"; text: string };
 type Presence = {
   io_device?: string;
   leader?: string;
-  devices?: { id: string; name: string; kind: string }[];
+  devices?: { id: string; name: string; kind: string; core_id?: string | null }[];
 };
 
 function isOverlay() {
@@ -140,7 +141,11 @@ export default function Page() {
       if (gen !== genRef.current) return;
       try {
         const m = JSON.parse(ev.data);
-        if (m.type === "reply") setLog((l) => [...l, { role: "jarvis", text: m.content }]);
+        if (m.type === "reply") {
+          const { text, spec } = takeVisual(String(m.content ?? ""));
+          if (text) setLog((l) => [...l, { role: "jarvis", text }]);
+          if (spec) setVisual(spec);
+        }
         if (m.type === "confirm") setLog((l) => [...l, { role: "sys", text: "CONFIRM: " + m.prompt }]);
         if (m.type === "job_deferred") setLog((l) => [...l, { role: "sys", text: m.message }]);
         if (m.type === "error") {
@@ -320,7 +325,6 @@ export default function Page() {
       <div className="hud-grid" />
       <div className="hud-scanlines" />
       <HudFrame />
-      {visual && <VisualStage spec={visual} overlay={overlay} onDismiss={dismissVisual} />}
       <header className="hud-top">
         <span className="brand">J.A.R.V.I.S.</span>
         <span className="hud-clock">{clock}</span>
@@ -350,6 +354,7 @@ export default function Page() {
               }
             >
               {d.name} · {d.kind}
+              {d.core_id ? ` · via ${d.core_id}` : ""}
             </div>
           ))}
         </aside>
@@ -389,6 +394,7 @@ export default function Page() {
           </form>
         </main>
       </div>
+      {visual && <VisualStage spec={visual} overlay={overlay} onDismiss={dismissVisual} />}
     </div>
   );
 }

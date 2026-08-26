@@ -77,6 +77,9 @@ pub struct DeviceInfo {
     pub caps: DeviceCaps,
     pub core_version: String,
     pub battery: Option<u8>,
+    /// Which jarvisd advertised this node. `None` = connected to this core.
+    #[serde(default)]
+    pub core_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -110,6 +113,15 @@ pub struct VisualSpec {
     pub diagram: Option<Diagram>,
     #[serde(default)]
     pub video: Option<VideoClip>,
+    /// HUD readout (weather, stats) — large labels over the hologram.
+    #[serde(default)]
+    pub facts: Option<Vec<VisualFact>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VisualFact {
+    pub label: String,
+    pub value: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -141,6 +153,7 @@ fn default_cam_z() -> f32 {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Body3d {
+    #[serde(default)]
     pub id: String,
     #[serde(default = "default_shape")]
     pub shape: String,
@@ -154,6 +167,9 @@ pub struct Body3d {
     pub orbit: Option<Orbit>,
     #[serde(default)]
     pub label: Option<String>,
+    /// Optional absolute position (LLM sometimes emits this instead of orbit).
+    #[serde(default)]
+    pub position: Option<[f32; 3]>,
 }
 
 fn default_shape() -> String {
@@ -240,6 +256,24 @@ pub enum ClientMessage {
     PullCore {},
     Ping {},
     DismissVisual {},
+    /// Another jarvisd sharing its locally connected devices.
+    MeshSync {
+        core_id: String,
+        devices: Vec<DeviceInfo>,
+        #[serde(default)]
+        io_device: String,
+        #[serde(default)]
+        leader: String,
+    },
+    /// Deliver a server frame to a device on this core (from a peer core).
+    PeerDeliver {
+        device_id: String,
+        json: String,
+    },
+    /// Re-broadcast a server frame originated on a peer core.
+    Relay {
+        frame: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -305,11 +339,27 @@ pub enum ServerMessage {
         mime: String,
         audio_b64: String,
     },
+    MeshSync {
+        core_id: String,
+        devices: Vec<DeviceInfo>,
+        io_device: String,
+        leader: String,
+    },
+    PeerForward {
+        device_id: String,
+        json: String,
+    },
 }
 
 impl ClientMessage {
     pub fn parse(s: &str) -> Result<Self, serde_json::Error> {
         serde_json::from_str(s)
+    }
+
+    pub fn to_json(&self) -> String {
+        serde_json::to_string(self).unwrap_or_else(|_| {
+            r#"{"type":"error","message":"serialize failed"}"#.to_string()
+        })
     }
 }
 
@@ -370,6 +420,7 @@ mod tests {
                 slides: None,
                 diagram: None,
                 video: None,
+                facts: None,
             },
             lang: Lang::Pl,
         };

@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use jarvis_memory::Memory;
 use jarvis_mesh::Mesh;
-use jarvis_protocol::{detect_lang, ChatTurn, ClientMessage, Lang, ServerMessage};
+use jarvis_protocol::{detect_lang, ChatTurn, ClientMessage, DeviceInfo, DeviceKind, Lang, ServerMessage};
 use jarvis_tasks::TaskQueue;
 use jarvis_tools::ToolHost;
 use jarvis_voice::Voice;
@@ -11,6 +11,7 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 
 mod visual;
+mod weather;
 pub use visual::{parse_visual_tag, visual_from_prompt, wants_visual};
 
 pub struct Agent {
@@ -35,17 +36,19 @@ pub struct Shared(pub Arc<Mutex<Agent>>);
 
 /// Send-safe handle: sqlite lives on one thread.
 pub struct AgentHandle {
-    tx: tokio::sync::mpsc::Sender<(ClientMessage, tokio::sync::oneshot::Sender<Vec<ServerMessage>>)>,
+    tx: tokio::sync::mpsc::Sender<AgentCmd>,
     pub model_name: String,
     pub local_device: jarvis_protocol::DeviceInfo,
 }
 
+enum AgentCmd {
+    Handle(ClientMessage, tokio::sync::oneshot::Sender<Vec<ServerMessage>>),
+    Snapshot(tokio::sync::oneshot::Sender<(String, String, Vec<DeviceInfo>)>),
+}
+
 impl AgentHandle {
     pub fn spawn(repo_root: PathBuf) -> Result<Self> {
-        let (tx, mut rx) = tokio::sync::mpsc::channel::<(
-            ClientMessage,
-            tokio::sync::oneshot::Sender<Vec<ServerMessage>>,
-        )>(32);
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<AgentCmd>(32);
         let agent = Agent::open(repo_root)?;
         let model_name = agent.model_name.clone();
         let local_device = agent.mesh.local.clone();
@@ -58,9 +61,20 @@ impl AgentHandle {
                     .expect("rt");
                 let mut agent = agent;
                 rt.block_on(async move {
-                    while let Some((msg, reply)) = rx.recv().await {
-                        let out = agent.handle(msg).await;
-                        let _ = reply.send(out);
+                    while let Some(cmd) = rx.recv().await {
+                        match cmd {
+                            AgentCmd::Handle(msg, reply) => {
+                                let out = agent.handle(msg).await;
+                                let _ = reply.send(out);
+                            }
+                            AgentCmd::Snapshot(reply) => {
+                                let _ = reply.send((
+                                    agent.mesh.io_device.clone(),
+                                    agent.mesh.leader.clone(),
+                                    agent.mesh.owned_devices(),
+                                ));
+                            }
+                        }
                     }
                 });
             })?;
@@ -73,7 +87,7 @@ impl AgentHandle {
 
     pub async fn handle(&self, msg: ClientMessage) -> Vec<ServerMessage> {
         let (tx, rx) = tokio::sync::oneshot::channel();
-        if self.tx.send((msg, tx)).await.is_err() {
+        if self.tx.send(AgentCmd::Handle(msg, tx)).await.is_err() {
             return vec![ServerMessage::Error {
                 message: "agent thread dead".into(),
             }];
@@ -82,6 +96,24 @@ impl AgentHandle {
             vec![ServerMessage::Error {
                 message: "agent dropped".into(),
             }]
+        })
+    }
+
+    pub async fn owned_mesh(&self) -> (String, String, Vec<DeviceInfo>) {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        if self.tx.send(AgentCmd::Snapshot(tx)).await.is_err() {
+            return (
+                self.local_device.id.clone(),
+                self.local_device.id.clone(),
+                vec![self.local_device.clone()],
+            );
+        }
+        rx.await.unwrap_or_else(|_| {
+            (
+                self.local_device.id.clone(),
+                self.local_device.id.clone(),
+                vec![self.local_device.clone()],
+            )
         })
     }
 
@@ -190,6 +222,16 @@ impl Agent {
                 }
             }
             ClientMessage::DismissVisual {} => vec![],
+            ClientMessage::MeshSync {
+                core_id,
+                devices,
+                io_device: _,
+                leader: _,
+            } => {
+                self.mesh.ingest_peer(&core_id, devices);
+                vec![self.presence()]
+            }
+            ClientMessage::PeerDeliver { .. } | ClientMessage::Relay { .. } => vec![],
             ClientMessage::Text { id, content, lang, device_id } => {
                 if let Some(d) = device_id {
                     self.mesh.claim_io(&d);
@@ -233,6 +275,25 @@ impl Agent {
                 until: "desktop".into(),
                 message: deferred,
             }];
+        }
+
+        if let Some(out) = self.mesh_voice_reply(id.clone(), &content, lang) {
+            return out;
+        }
+
+        if weather::looks_like_weather(&content) {
+            let place = weather::place_from_prompt(&content);
+            match weather::fetch_weather(&place).await {
+                Ok(report) => {
+                    let spec = report.visual();
+                    let text = report.spoken(lang);
+                    let _ = self.memory.log_turn("assistant", &text, lang.as_str());
+                    let mut out = self.spoken_reply(id.clone(), text, lang);
+                    out.push(ServerMessage::Visual { id, spec, lang });
+                    return out;
+                }
+                Err(e) => tracing::warn!("weather fetch failed ({e}); falling back to hologram"),
+            }
         }
 
         if let Some(tool_hit) = heuristic_tool(&content) {
@@ -347,6 +408,55 @@ impl Agent {
         }
         out
     }
+
+    fn mesh_voice_reply(&mut self, id: String, content: &str, lang: Lang) -> Option<Vec<ServerMessage>> {
+        let c = content.to_lowercase();
+        if looks_like_handoff(&c) {
+            return Some(match resolve_handoff_target(&c, &self.mesh, lang) {
+                Ok(dev) => {
+                    let _ = self.mesh.handoff_io(&dev.id);
+                    let _ = self.mesh.handoff_leader(&dev.id);
+                    let text = match lang {
+                        Lang::Pl => format!(
+                            "Przechodzę na {} ({}). I/O jest teraz na tym urządzeniu — mów dalej stamtąd.",
+                            dev.name,
+                            kind_label(dev.kind)
+                        ),
+                        Lang::En => format!(
+                            "Switching to {} ({}). I/O is on that device now — continue from there.",
+                            dev.name,
+                            kind_label(dev.kind)
+                        ),
+                    };
+                    let turns = self
+                        .memory
+                        .recent_turns(20)
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(|(role, content, l)| ChatTurn {
+                            role,
+                            content,
+                            lang: if l == "pl" { Lang::Pl } else { Lang::En },
+                        })
+                        .collect();
+                    let mut out = self.spoken_reply(id, text, lang);
+                    out.insert(
+                        0,
+                        ServerMessage::HandoffReady {
+                            snapshot: self.mesh.snapshot(turns),
+                        },
+                    );
+                    out.insert(1, self.presence());
+                    out
+                }
+                Err(text) => self.spoken_reply(id, text, lang),
+            });
+        }
+        if looks_like_device_list(&c) {
+            return Some(self.spoken_reply(id, format_device_roster(&self.mesh, lang), lang));
+        }
+        None
+    }
 }
 
 fn maybe_defer_desktop(content: &str, lang: Lang, mesh: &Mesh) -> Option<String> {
@@ -430,15 +540,250 @@ fn local_fallback(content: &str, lang: Lang) -> String {
 }
 
 fn strip_visual_tag(reply: &str) -> String {
-    if let Some(start) = reply.find("[[visual:") {
-        if let Some(rel_end) = reply[start..].find("]]") {
-            let mut s = String::new();
-            s.push_str(&reply[..start]);
-            s.push_str(&reply[start + rel_end + 2..]);
-            return s.trim().to_string();
+    let Some(start) = reply.find("[[visual:") else {
+        return reply.trim().to_string();
+    };
+    let after = &reply[start + 9..];
+    let json = visual::extract_visual_json(reply);
+    let end = if let Some(j) = json {
+        let json_at = reply[start..].find(j).unwrap_or(9) + start;
+        let mut e = json_at + j.len();
+        let tail = reply.get(e..).unwrap_or("");
+        let t = tail.trim_start();
+        if t.starts_with("]]") {
+            e += tail.len() - t.len() + 2;
+        }
+        e
+    } else if let Some(rel) = after.find("]]") {
+        start + 9 + rel + 2
+    } else {
+        reply.len()
+    };
+    let mut s = String::new();
+    s.push_str(&reply[..start]);
+    s.push_str(reply.get(end..).unwrap_or(""));
+    s.trim().to_string()
+}
+
+fn looks_like_device_list(c: &str) -> bool {
+    let about_devices = c.contains("urządzen")
+        || c.contains("urzadzen")
+        || c.contains("device")
+        || c.contains("mesh");
+    let asking = c.contains("jakie")
+        || c.contains("które")
+        || c.contains("ktore")
+        || c.contains("lista")
+        || c.contains("list")
+        || c.contains("dostęp")
+        || c.contains("dostep")
+        || c.contains("available")
+        || c.contains("what")
+        || c.contains("which")
+        || c.contains("mam")
+        || c.contains("online")
+        || c.contains("kto jest");
+    about_devices && asking
+}
+
+fn looks_like_handoff(c: &str) -> bool {
+    c.contains("przejd")
+        || c.contains("przełącz")
+        || c.contains("przelacz")
+        || c.contains("handoff")
+        || c.contains("switch to")
+        || c.contains("switch over")
+        || c.contains("idź na")
+        || c.contains("idz na")
+        || c.contains("idź do")
+        || c.contains("idz do")
+        || c.contains("go to hud")
+        || c.contains("go to windows")
+        || c.contains("go to flutter")
+        || c.contains("go to android")
+        || c.contains("go to linux")
+        || ((c.contains("używaj") || c.contains("uzywaj") || c.contains("use "))
+            && (c.contains("windows")
+                || c.contains("flutter")
+                || c.contains("hud")
+                || c.contains("android")
+                || c.contains("linux")
+                || c.contains("telefon")
+                || c.contains("render")
+                || c.contains("cloud")))
+}
+
+fn handoff_needle(c: &str) -> Option<String> {
+    const SEPS: &[&str] = &[
+        "przełącz się na ",
+        "przelacz sie na ",
+        "przełącz na ",
+        "przelacz na ",
+        "przejdź na ",
+        "przejdz na ",
+        "przejdź do ",
+        "przejdz do ",
+        "idź na ",
+        "idz na ",
+        "idź do ",
+        "idz do ",
+        "switch over to ",
+        "switch to ",
+        "handoff to ",
+        "go to ",
+        "używaj ",
+        "uzywaj ",
+        "use the ",
+        "use ",
+    ];
+    for sep in SEPS {
+        if let Some((_, rest)) = c.split_once(sep) {
+            let token = rest
+                .split(|ch: char| ch.is_whitespace() || matches!(ch, ',' | '.' | '!' | '?' | ';' | ':'))
+                .find(|w| !w.is_empty())?;
+            let t = token.trim_matches(|ch: char| !ch.is_alphanumeric() && ch != '-' && ch != '_');
+            if t.len() >= 2 {
+                return Some(t.to_string());
+            }
         }
     }
-    reply.trim().to_string()
+    const ALIASES: &[&str] = &[
+        "windows", "flutter", "android", "linux", "hud", "telefon", "phone", "render", "cloud",
+        "desktop", "komputer", "wieża", "wieza",
+    ];
+    ALIASES.iter().find(|a| c.contains(*a)).map(|a| (*a).to_string())
+}
+
+fn kind_label(kind: DeviceKind) -> &'static str {
+    match kind {
+        DeviceKind::Windows => "windows",
+        DeviceKind::LinuxDesktop => "linux",
+        DeviceKind::Android => "android",
+        DeviceKind::FlutterLinux => "flutter",
+        DeviceKind::Cloud => "cloud",
+        DeviceKind::JarvisLinux => "jarvis-linux",
+    }
+}
+
+fn kind_aliases(kind: DeviceKind) -> &'static [&'static str] {
+    match kind {
+        DeviceKind::Windows => &[
+            "windows", "win", "hud", "desktop", "pc", "komputer", "wieża", "wieza", "tower",
+        ],
+        DeviceKind::LinuxDesktop => &["linux", "desktop", "pc"],
+        DeviceKind::Android => &["android", "telefon", "phone", "komórk", "komork", "flutter"],
+        DeviceKind::FlutterLinux => &["flutter", "linux", "desktop"],
+        DeviceKind::Cloud => &["cloud", "render"],
+        DeviceKind::JarvisLinux => &["linux", "distro", "jarvis"],
+    }
+}
+
+fn is_windows_needle(n: &str) -> bool {
+    matches!(n, "windows" | "win" | "desktop" | "pc" | "komputer" | "wieża" | "wieza" | "tower")
+}
+
+fn is_flutter_needle(n: &str) -> bool {
+    matches!(n, "flutter" | "apka" | "app" | "telefon" | "phone" | "android")
+}
+
+fn match_device_score(d: &DeviceInfo, needle: &str) -> i32 {
+    let n = needle.to_lowercase();
+    if n.len() < 2 {
+        return 0;
+    }
+    let name = d.name.to_lowercase();
+    let id = d.id.to_lowercase();
+    let flutterish = name.contains("flutter")
+        || matches!(d.kind, DeviceKind::Android | DeviceKind::FlutterLinux);
+    let mut s = 0;
+    if kind_label(d.kind) == n {
+        s += 20;
+    }
+    if kind_aliases(d.kind).iter().any(|a| *a == n || n.contains(a)) {
+        s += 12;
+    }
+    if name == n {
+        s += 18;
+    } else if name.contains(&n) {
+        s += 10;
+    }
+    if id.contains(&n) {
+        s += 6;
+    }
+    if is_windows_needle(&n) && flutterish {
+        s -= 14;
+    }
+    if is_flutter_needle(&n) && flutterish {
+        s += 14;
+    }
+    if n == "hud" && name.contains("hud") {
+        s += 14;
+    }
+    s
+}
+
+fn resolve_handoff_target(c: &str, mesh: &Mesh, lang: Lang) -> Result<DeviceInfo, String> {
+    let roster = format_device_roster(mesh, lang);
+    let Some(needle) = handoff_needle(c) else {
+        return Err(match lang {
+            Lang::Pl => format!("Na które urządzenie? {roster}"),
+            Lang::En => format!("Which device? {roster}"),
+        });
+    };
+    let mut ranked: Vec<(i32, DeviceInfo)> = mesh
+        .list()
+        .into_iter()
+        .map(|d| (match_device_score(&d, &needle), d))
+        .filter(|(s, _)| *s > 0)
+        .collect();
+    ranked.sort_by(|a, b| b.0.cmp(&a.0));
+    if ranked.is_empty() {
+        return Err(match lang {
+            Lang::Pl => format!("Nie widzę „{needle}”. {roster}"),
+            Lang::En => format!("I don't see “{needle}”. {roster}"),
+        });
+    }
+    if ranked.len() > 1 && ranked[0].1.id == mesh.io_device && ranked[1].0 >= ranked[0].0 - 6 {
+        return Ok(ranked[1].1.clone());
+    }
+    Ok(ranked[0].1.clone())
+}
+
+fn format_device_roster(mesh: &Mesh, lang: Lang) -> String {
+    let mut devices = mesh.list();
+    devices.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    if devices.is_empty() {
+        return match lang {
+            Lang::Pl => "Nie widzę żadnych węzłów w mesh.".into(),
+            Lang::En => "No mesh nodes are visible.".into(),
+        };
+    }
+    let lines: Vec<String> = devices
+        .iter()
+        .map(|d| {
+            let mut tags = vec![kind_label(d.kind).to_string()];
+            if d.id == mesh.io_device {
+                tags.push("I/O".into());
+            }
+            if d.id == mesh.leader {
+                tags.push("leader".into());
+            }
+            if let Some(core) = &d.core_id {
+                tags.push(format!("via {core}"));
+            }
+            format!("{} ({})", d.name, tags.join(", "))
+        })
+        .collect();
+    match lang {
+        Lang::Pl => format!(
+            "Dostępne urządzenia: {}. Powiedz „przejdź na windows” albo „przejdź na flutter”, żebym się przełączył.",
+            lines.join("; ")
+        ),
+        Lang::En => format!(
+            "Available devices: {}. Say “switch to windows” or “switch to flutter” and I will hand off I/O.",
+            lines.join("; ")
+        ),
+    }
 }
 
 fn env_nonempty(key: &str) -> Option<String> {
@@ -458,7 +803,7 @@ async fn complete_llm(
     let mut messages = vec![json!({
         "role": "system",
         "content": format!(
-            "{persona}\nLanguage for this turn: {}.\nYou may emit a tool call as [[tool:name|args]] using vault_write, calendar_add, open_app, list_vault, shell.\n{}\nIf you emit a visual, use [[visual:JSON]] matching VisualSpec (kind scene3d|slides|diagram|video, title, scene3d.bodies with optional orbit).",
+            "{persona}\nLanguage for this turn: {}.\nYou may emit a tool call as [[tool:name|args]] using vault_write, calendar_add, open_app, list_vault, shell.\n{}\nIf you emit a visual, use [[visual:JSON]] matching VisualSpec (kind scene3d|slides|diagram|video, title, scene3d.bodies with orbit or position). Never paste that JSON into the spoken sentence — the HUD renders it.",
             lang.as_str(),
             if want_visual {
                 "The HUD will already project a hologram. You may refine it with [[visual:{...}]]. Speak briefly about what is shown."
@@ -582,4 +927,55 @@ async fn chat_completions(
         anyhow::bail!("empty completion");
     }
     Ok(text)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use jarvis_protocol::DeviceCaps;
+
+    #[test]
+    fn strips_visual_tag_even_with_nested_arrays() {
+        let reply = "Iron it is — Fe.\n[[visual:{\"kind\":\"scene3d\",\"title\":\"Iron\",\"scene3d\":{\"bodies\":[],\"links\":[[0,1]]}}]]";
+        assert_eq!(strip_visual_tag(reply), "Iron it is — Fe.");
+    }
+
+    #[test]
+    fn device_list_phrases() {
+        assert!(looks_like_device_list("jakie mam dostępne urządzenia"));
+        assert!(looks_like_device_list("what devices are online"));
+        assert!(!looks_like_device_list("open notepad"));
+        assert!(!looks_like_handoff("jakie mam urządzenia"));
+    }
+
+    #[test]
+    fn handoff_phrases() {
+        assert!(looks_like_handoff("przejdź na windows"));
+        assert!(looks_like_handoff("switch to flutter"));
+        assert_eq!(handoff_needle("przejdź na windows proszę"), Some("windows".into()));
+    }
+
+    fn dummy(id: &str, name: &str, kind: DeviceKind) -> DeviceInfo {
+        DeviceInfo {
+            id: id.into(),
+            name: name.into(),
+            kind,
+            boot: None,
+            caps: DeviceCaps::default(),
+            core_version: "0.1.0".into(),
+            battery: None,
+            core_id: None,
+        }
+    }
+
+    #[test]
+    fn handoff_prefers_desktop_over_flutter_for_windows() {
+        let mut mesh = Mesh::new();
+        mesh.hello(dummy("flutter-1", "Flutter", DeviceKind::Windows));
+        mesh.hello(dummy("hud-1", "HUD", DeviceKind::Windows));
+        mesh.claim_io("flutter-1");
+        let hit = resolve_handoff_target("przejdź na windows", &mesh, Lang::Pl).unwrap();
+        assert_ne!(hit.id, "flutter-1");
+        assert!(!hit.name.to_lowercase().contains("flutter"));
+    }
 }

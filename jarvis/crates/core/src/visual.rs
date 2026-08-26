@@ -1,5 +1,5 @@
 use jarvis_protocol::{
-    Body3d, Diagram, Orbit, Scene3d, Slide, VideoClip, VisualKind, VisualSpec,
+    Body3d, Diagram, Orbit, Scene3d, Slide, VideoClip, VisualFact, VisualKind, VisualSpec,
 };
 
 pub fn wants_visual(text: &str) -> bool {
@@ -9,7 +9,8 @@ pub fn wants_visual(text: &str) -> bool {
         "narysuj", "wykres", "chart", "prezentacj", "presentation", "slides",
         "animacj", "hologram", "model ", "modelu", "3d", "film", "video",
         "diagram", "schemat", "mapa", "atom", "dna", "układ słonecz",
-        "solar", "glob", "ziemia", "earth",
+        "solar", "glob", "ziemia", "earth", "żelaz", "zelaz", "iron",
+        "pogod", "weather", "temperatur", "forecast",
     ];
     KEYS.iter().any(|k| t.contains(k))
 }
@@ -60,6 +61,13 @@ fn looks_like_atom(t: &str) -> bool {
         || t.contains("helium")
         || t.contains("węgiel")
         || t.contains("carbon")
+        || t.contains("iron")
+        || t.contains("żelaz")
+        || t.contains("zelaz")
+        || t.contains(" tlen")
+        || t.contains("oxygen")
+        || t.contains(" fe")
+        || t.ends_with("fe")
 }
 
 fn topic_title(text: &str) -> String {
@@ -104,6 +112,7 @@ fn neural_hologram(title: &str) -> VisualSpec {
                 tilt: (i as f32) * 0.22,
             }),
             label: None,
+            position: None,
         });
         links.push((i, (i * 7 + 3) % n));
         links.push((i, (i * 5 + 11) % n));
@@ -116,6 +125,7 @@ fn neural_hologram(title: &str) -> VisualSpec {
         glow: true,
         orbit: None,
         label: Some(title.chars().take(24).collect()),
+        position: None,
     });
     VisualSpec {
         kind: VisualKind::Scene3d,
@@ -131,6 +141,7 @@ fn neural_hologram(title: &str) -> VisualSpec {
         slides: None,
         diagram: None,
         video: None,
+        facts: None,
     }
 }
 
@@ -140,6 +151,8 @@ fn atom_scene(t: &str, title: &str) -> VisualSpec {
     } else if t.contains("carbon") || t.contains("węgiel") {
         6
     } else if t.contains("oxygen") || t.contains("tlen") {
+        8
+    } else if t.contains("iron") || t.contains("żelaz") || t.contains("zelaz") || t.contains("fe") {
         8
     } else {
         1
@@ -152,6 +165,7 @@ fn atom_scene(t: &str, title: &str) -> VisualSpec {
         glow: true,
         orbit: None,
         label: Some("nucleus".into()),
+        position: None,
     }];
     for i in 0..electrons {
         bodies.push(Body3d {
@@ -166,6 +180,7 @@ fn atom_scene(t: &str, title: &str) -> VisualSpec {
                 tilt: i as f32 * 0.55,
             }),
             label: if i == 0 { Some("e⁻".into()) } else { None },
+            position: None,
         });
     }
     VisualSpec {
@@ -182,6 +197,7 @@ fn atom_scene(t: &str, title: &str) -> VisualSpec {
         slides: None,
         diagram: None,
         video: None,
+        facts: None,
     }
 }
 
@@ -213,6 +229,7 @@ fn solar_scene(title: &str) -> VisualSpec {
                 })
             },
             label: Some((*name).into()),
+            position: None,
         })
         .collect();
     VisualSpec {
@@ -229,6 +246,7 @@ fn solar_scene(title: &str) -> VisualSpec {
         slides: None,
         diagram: None,
         video: None,
+        facts: None,
     }
 }
 
@@ -248,6 +266,7 @@ fn dna_scene(title: &str) -> VisualSpec {
                 tilt: y,
             }),
             label: None,
+            position: None,
         });
     }
     VisualSpec {
@@ -264,6 +283,7 @@ fn dna_scene(title: &str) -> VisualSpec {
         slides: None,
         diagram: None,
         video: None,
+        facts: None,
     }
 }
 
@@ -282,6 +302,7 @@ fn globe_scene(title: &str) -> VisualSpec {
                 glow: true,
                 orbit: None,
                 label: Some("Earth".into()),
+                position: None,
             }],
             links: vec![],
             particles: 400,
@@ -290,7 +311,48 @@ fn globe_scene(title: &str) -> VisualSpec {
         slides: None,
         diagram: None,
         video: None,
+        facts: None,
     }
+}
+
+pub fn weather_visual(
+    city: &str,
+    temp_c: f32,
+    wind_kmh: f32,
+    humidity: u32,
+    condition: &str,
+) -> VisualSpec {
+    let mut spec = globe_scene(city);
+    spec.title = city.into();
+    spec.subtitle = Some(format!("{temp_c:.0} °C · {condition}"));
+    spec.facts = Some(vec![
+        VisualFact {
+            label: "TEMP".into(),
+            value: format!("{temp_c:.0}°C"),
+        },
+        VisualFact {
+            label: "WIATR".into(),
+            value: format!("{wind_kmh:.0} km/h"),
+        },
+        VisualFact {
+            label: "WILG".into(),
+            value: format!("{humidity}%"),
+        },
+        VisualFact {
+            label: "NIEBO".into(),
+            value: condition.into(),
+        },
+    ]);
+    spec.slides = Some(vec![Slide {
+        title: format!("Pogoda · {city}"),
+        bullets: vec![
+            format!("{temp_c:.0} °C"),
+            condition.into(),
+            format!("Wiatr {wind_kmh:.0} km/h"),
+            format!("Wilgotność {humidity}%"),
+        ],
+    }]);
+    spec
 }
 
 fn slides_about(title: &str) -> VisualSpec {
@@ -322,6 +384,7 @@ fn slides_about(title: &str) -> VisualSpec {
         ]),
         diagram: None,
         video: None,
+        facts: None,
     }
 }
 
@@ -342,14 +405,51 @@ fn diagram_about(title: &str) -> VisualSpec {
             edges: vec![(1, 0), (0, 2), (2, 3)],
         }),
         video: None,
+        facts: None,
     }
 }
 
 pub fn parse_visual_tag(reply: &str) -> Option<VisualSpec> {
-    let start = reply.find("[[visual:")?;
-    let rest = &reply[start + 9..];
-    let end = rest.find("]]")?;
-    serde_json::from_str(rest[..end].trim()).ok()
+    serde_json::from_str(extract_visual_json(reply)?).ok()
+}
+
+pub fn extract_visual_json(reply: &str) -> Option<&str> {
+    let start = reply.find("[[visual:")? + 9;
+    let rest = reply[start..].trim_start();
+    if !rest.starts_with('{') {
+        return None;
+    }
+    let mut depth = 0i32;
+    let mut in_str = false;
+    let mut escape = false;
+    for (i, c) in rest.char_indices() {
+        if in_str {
+            if escape {
+                escape = false;
+                continue;
+            }
+            if c == '\\' {
+                escape = true;
+                continue;
+            }
+            if c == '"' {
+                in_str = false;
+            }
+            continue;
+        }
+        match c {
+            '"' => in_str = true,
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(&rest[..=i]);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 #[cfg(test)]
@@ -361,6 +461,7 @@ mod tests {
         assert!(wants_visual("pokaż model atomu"));
         assert!(wants_visual("show me DNA"));
         assert!(wants_visual("zrób prezentację o fotosyntezie"));
+        assert!(wants_visual("pokaż pogodę dla rudy śląskiej"));
         assert!(!wants_visual("jaki mam kalendarz"));
     }
 
@@ -385,5 +486,13 @@ mod tests {
         let spec = parse_visual_tag(r#"ok [[visual:{"kind":"slides","title":"X"}]]"#).unwrap();
         assert_eq!(spec.kind, VisualKind::Slides);
         assert_eq!(spec.title, "X");
+    }
+
+    #[test]
+    fn parses_visual_tag_with_nested_arrays() {
+        let reply = r##"Fe [[visual:{"kind":"scene3d","title":"Iron","scene3d":{"bodies":[{"id":"n","radius":0.4,"color":"#b7410e","position":[0,0,0]}],"links":[[0,0]]}}]]"##;
+        let spec = parse_visual_tag(reply).expect("nested ]] in links");
+        assert_eq!(spec.title, "Iron");
+        assert_eq!(spec.scene3d.unwrap().bodies[0].position, Some([0.0, 0.0, 0.0]));
     }
 }

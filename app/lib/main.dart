@@ -9,6 +9,7 @@ import 'package:web_socket_channel/web_socket_channel.dart';
 
 import 'hud_chrome.dart';
 import 'uplink.dart';
+import 'visual_stage.dart';
 
 void main() => runApp(const JarvisApp());
 
@@ -88,6 +89,7 @@ class _HudPageState extends State<HudPage> {
   var _alive = true;
   var _linking = false;
   var _speaking = false;
+  Map<String, dynamic>? _visual;
   final _deviceId = 'flutter-${defaultTargetPlatform.name}-${DateTime.now().millisecondsSinceEpoch}';
   final _player = AudioPlayer();
 
@@ -104,11 +106,25 @@ class _HudPageState extends State<HudPage> {
   void _listen(WebSocketChannel ch) {
     ch.stream.listen((event) {
       if (!_alive) return;
-      final m = jsonDecode(event as String) as Map<String, dynamic>;
+      final raw = event is String ? event : utf8.decode(event as List<int>);
+      final m = jsonDecode(raw) as Map<String, dynamic>;
       final t = m['type'];
       setState(() {
         if (t == 'reply') {
-          _log.add(_Msg('jarvis', '${m['content']}'));
+          final taken = takeVisual('${m['content']}');
+          if (taken.text.isNotEmpty) {
+            _log.add(_Msg('jarvis', taken.text));
+          }
+          if (taken.spec != null) {
+            _visual = taken.spec;
+          }
+        } else if (t == 'visual') {
+          final spec = m['spec'];
+          if (spec is Map<String, dynamic>) {
+            _visual = spec;
+          } else if (spec is Map) {
+            _visual = Map<String, dynamic>.from(spec);
+          }
         } else if (t == 'confirm') {
           _log.add(_Msg('sys', 'CONFIRM: ${m['prompt']}'));
         } else if (t == 'job_deferred') {
@@ -162,61 +178,68 @@ class _HudPageState extends State<HudPage> {
     _linking = true;
     _ch?.sink.close();
     _ch = null;
-    for (final url in [kLocalWs, kRenderWs]) {
+    if (mounted) {
+      setState(() {
+        _status = 'linking';
+        _log.add(const _Msg('sys', 'Szukam uplinku…'));
+      });
+    }
+    for (final url in uplinkCandidates()) {
       if (!_alive) break;
-      try {
-        final ch = WebSocketChannel.connect(Uri.parse(url));
-        await ch.ready.timeout(Duration(seconds: isRenderUplink(url) ? 25 : 2));
-        if (!_alive) {
-          ch.sink.close();
-          break;
-        }
-        _ch = ch;
-        _listen(ch);
-        ch.sink.add(jsonEncode(withToken({
-          'type': 'hello',
-          'device': {
-            'id': _deviceId,
-            'name': 'Flutter',
-            'kind': defaultTargetPlatform == TargetPlatform.android
-                ? 'android'
-                : defaultTargetPlatform == TargetPlatform.linux
-                    ? 'linux_desktop'
-                    : 'windows',
-            'boot': null,
-            'caps': {
-              'llm_local': false,
-              'llm_online': true,
-              'tts': true,
-              'stt': false,
-              'tools_os': false,
-              'rewrite_core': false,
-              'pull_core': true,
-              'mic': true,
-              'speaker': true,
-            },
-            'core_version': '0.1.0',
-            'battery': null,
-          },
-        })));
-        if (mounted) {
-          setState(() {
-            _status = 'online';
-            _uplink = isRenderUplink(url) ? 'Render' : 'Local';
-            _log.add(_Msg('sys', 'Uplink: $_uplink'));
-          });
-        }
-        _linking = false;
-        return;
-      } catch (_) {
-        continue;
+      final ch = await connectUplink(url, onLog: (msg) {
+        if (!mounted || !_alive) return;
+        setState(() => _log.add(_Msg('sys', msg)));
+      });
+      if (ch == null) continue;
+      if (!_alive) {
+        ch.sink.close();
+        break;
       }
+      _ch = ch;
+      _listen(ch);
+      ch.sink.add(jsonEncode(withToken({
+        'type': 'hello',
+        'device': {
+          'id': _deviceId,
+          'name': defaultTargetPlatform == TargetPlatform.android ? 'Android' : 'Flutter',
+          'kind': defaultTargetPlatform == TargetPlatform.android
+              ? 'android'
+              : defaultTargetPlatform == TargetPlatform.linux
+                  ? 'linux_desktop'
+                  : 'windows',
+          'boot': null,
+          'caps': {
+            'llm_local': false,
+            'llm_online': true,
+            'tts': true,
+            'stt': false,
+            'tools_os': false,
+            'rewrite_core': false,
+            'pull_core': true,
+            'mic': true,
+            'speaker': true,
+          },
+          'core_version': '0.1.0',
+          'battery': null,
+        },
+      })));
+      if (mounted) {
+        setState(() {
+          _status = 'online';
+          _uplink = uplinkLabel(url);
+        });
+      }
+      _linking = false;
+      return;
     }
     _linking = false;
     if (mounted && _alive) {
-      setState(() => _status = 'offline');
+      setState(() {
+        _status = 'offline';
+        _log.add(const _Msg('sys', 'Brak uplinku — Render śpi albo brak sieci. Ponawiam.'));
+      });
       _retry?.cancel();
-      _retry = Timer(const Duration(seconds: 4), _autoLink);
+      _retry = Timer(const Duration(seconds: 5), _autoLink);
     }
   }
 
@@ -245,12 +268,19 @@ class _HudPageState extends State<HudPage> {
     _ctrl.clear();
   }
 
+  void _dismissVisual() {
+    setState(() => _visual = null);
+    _ch?.sink.add(jsonEncode(withToken({'type': 'dismiss_visual'})));
+  }
+
   @override
   void initState() {
     super.initState();
     _tickClock();
     _clockTimer = Timer.periodic(const Duration(seconds: 1), (_) => _tickClock());
-    _autoLink();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (_alive) _autoLink();
+    });
   }
 
   @override
@@ -340,6 +370,10 @@ class _HudPageState extends State<HudPage> {
               ),
             ),
           ),
+          if (_visual != null)
+            Positioned.fill(
+              child: VisualStage(spec: _visual!, onDismiss: _dismissVisual),
+            ),
         ],
       ),
     );
@@ -375,7 +409,11 @@ class _TopBar extends StatelessWidget {
         Text(clock, style: hudDisplay(size: 12, color: HudColors.cyan, tracking: 2.4)),
         const SizedBox(width: 18),
         Text(
-          status == 'online' ? 'JARVIS  ·  STARK OS' : 'JARVIS  ·  STANDBY',
+          status == 'online'
+              ? 'JARVIS  ·  STARK OS'
+              : status == 'linking'
+                  ? 'JARVIS  ·  LINKING'
+                  : 'JARVIS  ·  STANDBY',
           style: hudDisplay(size: 10, color: HudColors.amber.withValues(alpha: 0.75), tracking: 3.4),
         ),
       ],
@@ -476,7 +514,7 @@ class _ReactorColumn extends StatelessWidget {
             (d) => Padding(
               padding: const EdgeInsets.only(top: 4),
               child: Text(
-                '${d['name']} · ${d['kind']}',
+                '${d['name']} · ${d['kind']}${d['core_id'] != null ? ' · via ${d['core_id']}' : ''}',
                 style: hudMono(
                   size: 12,
                   color: d['id'] == leader ? HudColors.cyan : HudColors.text,

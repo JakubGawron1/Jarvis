@@ -19,6 +19,7 @@ export type VisualSpec = {
       glow?: boolean;
       orbit?: { radius?: number; speed?: number; tilt?: number } | null;
       label?: string | null;
+      position?: [number, number, number] | null;
     }[];
     links?: [number, number][];
     particles?: number;
@@ -27,6 +28,7 @@ export type VisualSpec = {
   slides?: { title: string; bullets?: string[] }[] | null;
   diagram?: { nodes: string[]; edges?: [number, number][] } | null;
   video?: { duration_sec?: number; caption?: string | null } | null;
+  facts?: { label: string; value: string }[] | null;
 };
 
 type Props = {
@@ -112,8 +114,11 @@ export default function VisualStage({ spec, overlay, onDismiss }: Props) {
       }
       const pivot = new THREE.Group();
       const orbit = b.orbit;
+      const pos = b.position;
       if (orbit && Math.abs(orbit.tilt ?? 0) > 1.6) {
         mesh.position.set(orbit.radius ?? 1, orbit.tilt ?? 0, 0);
+      } else if (!orbit && pos) {
+        mesh.position.set(pos[0], pos[1], pos[2]);
       } else if (!orbit) {
         mesh.position.set(0, 0, 0);
       }
@@ -184,7 +189,8 @@ export default function VisualStage({ spec, overlay, onDismiss }: Props) {
       group.add(ring);
     }
 
-    const clock = new THREE.Clock();
+    const timer = new THREE.Timer();
+    timer.connect(document);
     let raf = 0;
     const videoBoost = spec.kind === "video" ? 1.8 : 1;
 
@@ -199,8 +205,9 @@ export default function VisualStage({ spec, overlay, onDismiss }: Props) {
     const ro = new ResizeObserver(resize);
     ro.observe(el);
 
-    const tick = () => {
-      const t = clock.getElapsedTime() * videoBoost;
+    const tick = (now?: number) => {
+      timer.update(now);
+      const t = timer.getElapsed() * videoBoost;
       group.rotation.y = t * 0.08;
       points.rotation.y = t * 0.05;
       bodies.forEach((b, i) => {
@@ -212,10 +219,17 @@ export default function VisualStage({ spec, overlay, onDismiss }: Props) {
         const r = orbit.radius ?? 1.5;
         const ang = t * speed + i * 0.4;
         const tilt = orbit.tilt ?? 0;
+        const ox = b.position?.[0] ?? 0;
+        const oy = b.position?.[1] ?? 0;
+        const oz = b.position?.[2] ?? 0;
         if (Math.abs(tilt) > 1.6) {
-          mesh.position.set(Math.cos(ang) * r, tilt, Math.sin(ang) * r);
+          mesh.position.set(ox + Math.cos(ang) * r, oy + tilt, oz + Math.sin(ang) * r);
         } else {
-          mesh.position.set(Math.cos(ang) * r, Math.sin(ang * 0.35) * r * 0.12, Math.sin(ang) * r);
+          mesh.position.set(
+            ox + Math.cos(ang) * r,
+            oy + Math.sin(ang * 0.35) * r * 0.12,
+            oz + Math.sin(ang) * r,
+          );
         }
       });
       links.forEach(([a, b], i) => {
@@ -238,6 +252,7 @@ export default function VisualStage({ spec, overlay, onDismiss }: Props) {
 
     return () => {
       cancelAnimationFrame(raf);
+      timer.dispose();
       ro.disconnect();
       renderer.dispose();
       el.removeChild(renderer.domElement);
@@ -261,6 +276,16 @@ export default function VisualStage({ spec, overlay, onDismiss }: Props) {
           <h2>{spec.title}</h2>
           {spec.subtitle && <p>{spec.subtitle}</p>}
           {spec.video?.caption && <p className="visual-caption">{spec.video.caption}</p>}
+          {(spec.facts ?? []).length > 0 && (
+            <div className="visual-facts">
+              {(spec.facts ?? []).map((f) => (
+                <div className="visual-fact" key={f.label}>
+                  <span>{f.label}</span>
+                  <b>{f.value}</b>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
         {spec.kind === "slides" && slides.length > 0 && (
           <div className="visual-slides">

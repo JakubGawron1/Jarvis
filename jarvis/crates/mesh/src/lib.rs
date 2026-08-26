@@ -39,6 +39,7 @@ impl Mesh {
                 },
                 core_version: CORE_VERSION.into(),
                 battery: None,
+                core_id: None,
             };
         }
         let kind = if cfg!(target_os = "windows") {
@@ -82,6 +83,7 @@ impl Mesh {
             },
             core_version: CORE_VERSION.into(),
             battery: None,
+            core_id: None,
         }
     }
 
@@ -167,6 +169,32 @@ impl Mesh {
 
     pub fn list(&self) -> Vec<DeviceInfo> {
         self.devices.values().map(|(d, _)| d.clone()).collect()
+    }
+
+    /// Devices physically connected to this jarvisd (not mirrored from a peer).
+    pub fn owned_devices(&self) -> Vec<DeviceInfo> {
+        self.list()
+            .into_iter()
+            .filter(|d| d.core_id.is_none())
+            .collect()
+    }
+
+    /// Replace the device set advertised by another core.
+    pub fn ingest_peer(&mut self, core_id: &str, devices: Vec<DeviceInfo>) {
+        if core_id.is_empty() || core_id == self.local.id {
+            return;
+        }
+        self.devices.retain(|id, (d, _)| {
+            *id == self.local.id || d.core_id.as_deref() != Some(core_id)
+        });
+        for mut d in devices {
+            if d.id == self.local.id {
+                continue;
+            }
+            d.core_id = Some(core_id.to_string());
+            self.devices.insert(d.id.clone(), (d, Instant::now()));
+        }
+        self.elect();
     }
 
     pub fn snapshot(&self, transcript: Vec<jarvis_protocol::ChatTurn>) -> SessionSnapshot {
