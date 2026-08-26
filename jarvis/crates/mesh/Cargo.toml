@@ -1,0 +1,14 @@
+[package]
+name = "jarvis-mesh"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+jarvis-protocol.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+chrono.workspace = true
+hostname.workspace = true

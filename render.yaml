@@ -1,0 +1,31 @@
+# Render Blueprint — cloud fallback `jarvisd` (Free). HUD is local/Vercel, not this service.
+services:
+  - type: web
+    name: jarvis-core
+    runtime: docker
+    plan: free
+    dockerfilePath: ./cloud/Dockerfile
+    dockerContext: .
+    healthCheckPath: /health
+    autoDeployTrigger: commit
+    envVars:
+      - key: JARVIS_KIND
+        value: cloud
+      - key: JARVIS_ROOT
+        value: /app
+      - key: OPENROUTER_API_KEY
+        sync: false
+      - key: OPENROUTER_MODEL
+        value: openrouter/auto
+      - key: OPENROUTER_TTS_MODEL
+        value: fish-audio/s2.1-pro-free:free
+      - key: OPENROUTER_TTS_MODEL_EN
+        value: deepgram/flux-tts:free
+      - key: OPENROUTER_TTS_VOICE_EN
+        value: flux-sean-en
+      - key: JARVIS_PAIRING_TOKEN
+        generateValue: true
+      - key: TURSO_URL
+        sync: false
+      - key: TURSO_AUTH_TOKEN
+        sync: false

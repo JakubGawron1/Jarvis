@@ -1,0 +1,12 @@
+#!/bin/bash
+set -euo pipefail
+groupadd -f wheel
+id jarvis >/dev/null 2>&1 || useradd -m -s /bin/bash -G wheel,video,audio,input jarvis
+echo 'jarvis:jarvis' | chpasswd
+echo 'root:jarvis' | chpasswd
+chmod 440 /etc/sudoers.d/jarvis
+chmod 755 /usr/local/bin/jarvis-hud-overlay /usr/local/lib/jarvis/write-bootenv
+mkdir -p /opt/jarvis /etc/jarvis
+chown -R jarvis:jarvis /opt/jarvis
+systemctl set-default graphical.target
+systemctl enable NetworkManager sddm jarvisd jarvis-bootenv qemu-guest-agent || true

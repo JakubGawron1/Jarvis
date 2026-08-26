@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Jarvis HUD Overlay
+Comment=Amber holographic HUD over the Plasma desktop
+Exec=jarvis-hud-overlay
+Icon=applications-science
+Terminal=false
+Categories=Utility;
+StartupWMClass=jarvis-hud-overlay

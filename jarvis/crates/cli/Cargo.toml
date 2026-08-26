@@ -1,0 +1,22 @@
+[package]
+name = "jarvis-cli"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "jarvis"
+path = "src/main.rs"
+
+[dependencies]
+jarvis-protocol.workspace = true
+jarvis-core.workspace = true
+anyhow.workspace = true
+clap.workspace = true
+tokio.workspace = true
+tokio-tungstenite.workspace = true
+futures-util.workspace = true
+url.workspace = true
+jarvis-update.workspace = true
+uuid.workspace = true
+serde_json.workspace = true
+tracing-subscriber.workspace = true

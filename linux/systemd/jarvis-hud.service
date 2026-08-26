@@ -1,0 +1,12 @@
+[Unit]
+Description=Jarvis HUD (Next.js)
+After=jarvisd.service
+
+[Service]
+WorkingDirectory=%h/Jarvis/hud
+ExecStart=/usr/bin/pnpm start
+Environment=PORT=3000
+Restart=on-failure
+
+[Install]
+WantedBy=default.target

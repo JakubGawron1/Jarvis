@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+set -euo pipefail
+URL="${JARVIS_HUD_URL:-http://127.0.0.1:3000/?overlay=1}"
+CLASS="jarvis-hud-overlay"
+
+if command -v wmctrl >/dev/null 2>&1; then
+  if wmctrl -lx | grep -qi "$CLASS\|overlay=1"; then
+    pkill -f "overlay=1" || true
+    exit 0
+  fi
+fi
+
+if command -v chromium >/dev/null 2>&1; then
+  exec chromium --app="$URL" --class="$CLASS" --enable-transparent-visuals "$@"
+fi
+echo "chromium missing" >&2
+exit 1

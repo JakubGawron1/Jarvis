@@ -1,0 +1,21 @@
+[package]
+name = "jarvis-core"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+jarvis-protocol.workspace = true
+jarvis-memory.workspace = true
+jarvis-tasks.workspace = true
+jarvis-tools.workspace = true
+jarvis-voice.workspace = true
+jarvis-mesh.workspace = true
+jarvis-update.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+reqwest.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+regex.workspace = true

@@ -1,0 +1,9 @@
+.git
+**/target
+hud/node_modules
+hud/.next
+app
+os
+linux/distro/**/*.qcow2
+*.sqlite
+.env

@@ -1,0 +1,57 @@
+# Secrets & local runtime
+.env
+.env.local
+.cursor/
+data/
+*.sqlite
+*.sqlite-journal
+target/
+node_modules/
+.next/
+out/
+dist/
+build/
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+**/*.iml
+.idea/
+.vscode/
+*.log
+.DS_Store
+Thumbs.db
+
+# Voice / model caches
+models/
+*.gguf
+*.onnx
+*.bin
+whisper.cpp/
+kokoro/
+piper-voices/
+vendor/piper/
+
+# Distro build artifacts
+linux/distro/**/*.qcow2
+linux/distro/**/*.vdi
+linux/distro/**/*.ova
+linux/distro/**/*.iso
+linux/distro/**/*.img
+linux/distro/**/*.raw
+linux/distro/**/mkosi.output/
+
+# Flutter
+app/.dart_tool/
+app/build/
+app/.packages
+
+# HUD
+hud/.next/
+hud/node_modules/
+package-lock.json
+npm-shrinkwrap.json
+
+# OS
+*.pdb
+*.exe~
+Cargo.lock.bak

@@ -1,0 +1,55 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/protocol",
+    "crates/core",
+    "crates/memory",
+    "crates/tasks",
+    "crates/voice",
+    "crates/mesh",
+    "crates/tools",
+    "crates/daemon",
+    "crates/ffi",
+    "crates/update",
+    "crates/cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "MIT"
+repository = "https://github.com/JakubGawron1/Jarvis"
+
+[workspace.dependencies]
+jarvis-protocol = { path = "crates/protocol" }
+jarvis-core = { path = "crates/core" }
+jarvis-memory = { path = "crates/memory" }
+jarvis-tasks = { path = "crates/tasks" }
+jarvis-voice = { path = "crates/voice" }
+jarvis-mesh = { path = "crates/mesh" }
+jarvis-tools = { path = "crates/tools" }
+jarvis-update = { path = "crates/update" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+anyhow = "1"
+thiserror = "2"
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls", "http2", "charset"] }
+rusqlite = { version = "0.40", features = ["bundled"] }
+axum = { version = "0.8", features = ["ws"] }
+tower-http = { version = "0.7", features = ["cors", "fs"] }
+clap = { version = "4", features = ["derive", "env"] }
+hostname = "0.4"
+sysinfo = "0.39"
+futures-util = "0.3"
+tokio-tungstenite = { version = "0.30", features = ["connect"] }
+url = "2"
+sha2 = "0.11"
+hex = "0.4"
+regex = "1"
+base64 = "0.22"

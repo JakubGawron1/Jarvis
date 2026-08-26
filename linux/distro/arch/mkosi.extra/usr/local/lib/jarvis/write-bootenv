@@ -1,0 +1,10 @@
+#!/bin/sh
+set -eu
+mkdir -p /etc/jarvis
+boot=qemu
+for t in $(cat /proc/cmdline); do
+  case "$t" in
+    jarvis.boot=*) boot=${t#jarvis.boot=} ;;
+  esac
+done
+printf 'JARVIS_BOOT=%s\n' "$boot" > /etc/jarvis/boot.env

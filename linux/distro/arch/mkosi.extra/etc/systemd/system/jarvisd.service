@@ -1,0 +1,14 @@
+[Unit]
+Description=Jarvis daemon
+After=network-online.target NetworkManager.service
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/local/bin/jarvisd
+Environment=JARVIS_ROOT=/opt/jarvis
+Environment=JARVIS_KIND=jarvis_linux
+EnvironmentFile=-/etc/jarvis/boot.env
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target

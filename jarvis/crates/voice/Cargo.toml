@@ -1,0 +1,12 @@
+[package]
+name = "jarvis-voice"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+jarvis-protocol.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+serde_json.workspace = true
+base64.workspace = true
+reqwest = { workspace = true, features = ["blocking"] }
