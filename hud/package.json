@@ -1,6 +1,7 @@
 {
   "name": "jarvis-hud",
   "private": true,
+  "packageManager": "pnpm@11.24.0",
   "scripts": {
     "dev": "next dev --port 3000",
     "build": "next build",

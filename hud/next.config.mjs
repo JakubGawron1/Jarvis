@@ -36,17 +36,21 @@ const pairingToken =
   rootEnv("JARVIS_PAIRING_TOKEN") ||
   "uMrUM1mJIQFOmGPwMVekLpsjBTwV9QcO1lsX/im7l5I=";
 
+const onVercel = Boolean(process.env.VERCEL);
+
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   env: {
     NEXT_PUBLIC_JARVIS_CLOUD_WS: cloudWs,
     NEXT_PUBLIC_JARVIS_PAIRING_TOKEN: pairingToken,
   },
-  output: "standalone",
   transpilePackages: ["three"],
-  outputFileTracingRoot: repoRoot,
-  turbopack: {
-    root: repoRoot,
-  },
 };
+
+if (!onVercel) {
+  nextConfig.output = "standalone";
+  nextConfig.outputFileTracingRoot = repoRoot;
+  nextConfig.turbopack = { root: repoRoot };
+}
+
 export default nextConfig;

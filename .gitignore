@@ -48,6 +48,8 @@ app/.packages
 # HUD
 hud/.next/
 hud/node_modules/
+.vercel/
+hud/.vercel/
 package-lock.json
 npm-shrinkwrap.json
 
