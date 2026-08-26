@@ -117,13 +117,17 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
                             Ok(msg) => {
                                 let replies = state.agent.handle(msg).await;
                                 for r in replies {
-                                    // Broadcast only — this socket already subscribed via `rx`.
-                                    // Sending here *and* via `tx` duplicated every reply in the HUD.
-                                    if state.tx.send(r.to_json()).is_err() {
-                                        let s = r.to_json();
-                                        if sender.send(Message::Text(s.into())).await.is_err() {
-                                            return;
+                                    let json = r.to_json();
+                                    if fanout_all(&r) {
+                                        // Presence / mesh — every HUD. This socket is already on `rx`.
+                                        if state.tx.send(json.clone()).is_err() {
+                                            if sender.send(Message::Text(json.into())).await.is_err() {
+                                                return;
+                                            }
                                         }
+                                    } else if sender.send(Message::Text(json.into())).await.is_err() {
+                                        // Reply / speech / visual — only the device that asked.
+                                        return;
                                     }
                                 }
                             }
@@ -176,6 +180,16 @@ fn bind_addr() -> String {
 }
 
 fn bind_addr_from(jarvis_bind: Option<&str>, port: Option<&str>, kind: Option<&str>) -> String {
+    // Copied desktop `.env` often has JARVIS_BIND=127.0.0.1:7420. On Render that
+    // makes health checks hit the wrong socket → `x-render-routing: no-server`.
+    if kind == Some("cloud") {
+        if let Some(port) = port {
+            if !port.trim().is_empty() {
+                return format!("0.0.0.0:{port}");
+            }
+        }
+        return "0.0.0.0:7420".into();
+    }
     if let Some(bind) = jarvis_bind {
         if !bind.trim().is_empty() {
             return bind.to_string();
@@ -186,10 +200,21 @@ fn bind_addr_from(jarvis_bind: Option<&str>, port: Option<&str>, kind: Option<&s
             return format!("0.0.0.0:{port}");
         }
     }
-    if kind == Some("cloud") {
-        return "0.0.0.0:7420".into();
-    }
     DEFAULT_BIND.into()
+}
+
+fn fanout_all(msg: &ServerMessage) -> bool {
+    matches!(
+        msg,
+        ServerMessage::Presence { .. }
+            | ServerMessage::DeviceHello { .. }
+            | ServerMessage::DeviceLost { .. }
+            | ServerMessage::Stats { .. }
+            | ServerMessage::CoreWaking {}
+            | ServerMessage::CoreUpdate { .. }
+            | ServerMessage::HandoffReady { .. }
+            | ServerMessage::Pong {}
+    )
 }
 
 fn load_dotenv() {
@@ -217,10 +242,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn bind_prefers_jarvis_bind() {
+    fn bind_cloud_ignores_localhost_jarvis_bind() {
         assert_eq!(
             bind_addr_from(Some("127.0.0.1:7420"), Some("10000"), Some("cloud")),
-            "127.0.0.1:7420"
+            "0.0.0.0:10000"
         );
     }
 

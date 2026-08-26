@@ -152,28 +152,11 @@ h1, h2 {
 
 .reactor {
   position: relative;
-  width: 188px;
-  height: 188px;
+  width: 220px;
+  height: 220px;
   margin: 8px auto 14px;
 }
-.reactor-svg { width: 100%; height: 100%; filter: drop-shadow(0 0 12px rgba(78, 227, 255, 0.35)); }
-.reactor-spin,
-.reactor-spin-slow,
-.reactor-hex,
-.reactor-sweep {
-  transform-box: view-box;
-  transform-origin: 100px 100px;
-}
-.reactor-spin { animation: spin 8s linear infinite; }
-.reactor-spin-slow { animation: spin 22s linear infinite reverse; }
-.reactor-hex { animation: spin 18s linear infinite; }
-.reactor-sweep { animation: spin 4.8s linear infinite; }
-.reactor-core { animation: corePulse 2.2s ease-in-out infinite; }
-.reactor-on .reactor-core { animation-duration: 1.4s; }
-@keyframes spin { to { transform: rotate(360deg); } }
-@keyframes corePulse {
-  50% { filter: brightness(1.35); }
-}
+.reactor-canvas { width: 100%; height: 100%; display: block; }
 .reactor-label {
   position: absolute;
   left: 50%;
@@ -183,6 +166,8 @@ h1, h2 {
   letter-spacing: 0.28em;
   color: var(--cyan);
 }
+.reactor-wake .reactor-label,
+.reactor-speak .reactor-label { color: var(--amber); }
 
 .stat {
   display: flex;

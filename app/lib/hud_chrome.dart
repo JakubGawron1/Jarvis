@@ -138,11 +138,17 @@ class HudFramePainter extends CustomPainter {
 }
 
 class ArcReactorPainter extends CustomPainter {
-  ArcReactorPainter({required this.t, required this.online, required this.cpu});
+  ArcReactorPainter({
+    required this.t,
+    required this.online,
+    required this.cpu,
+    required this.speaking,
+  });
 
   final double t;
   final bool online;
   final double cpu;
+  final bool speaking;
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -151,37 +157,30 @@ class ArcReactorPainter extends CustomPainter {
     canvas.save();
     canvas.translate(c.dx, c.dy);
 
-    final gold = Paint()
-      ..style = PaintingStyle.stroke
-      ..color = HudColors.amber
-      ..strokeWidth = 1.2;
-    canvas.drawCircle(Offset.zero, r * 0.96, gold..color = HudColors.amber.withValues(alpha: 0.22));
+    final spin = speaking ? t * 2.4 : t;
+    final pulse = speaking
+        ? 0.88 + 0.18 * math.sin(t * math.pi * 18)
+        : 0.92 + 0.08 * math.sin(t * math.pi * 2);
 
-    for (var i = 0; i < 36; i++) {
-      final a = (i / 36) * math.pi * 2;
-      final inner = i % 6 == 0 ? r * 0.88 : r * 0.91;
-      canvas.drawLine(
-        Offset(math.cos(a) * inner, math.sin(a) * inner),
-        Offset(math.cos(a) * r * 0.96, math.sin(a) * r * 0.96),
-        Paint()
-          ..color = i % 6 == 0 ? HudColors.amber : HudColors.amber.withValues(alpha: 0.4)
-          ..strokeWidth = i % 6 == 0 ? 1.4 : 0.7,
+    for (var i = 0; i < 220; i++) {
+      final y = 1 - (i / 219) * 2;
+      final rad = math.sqrt(math.max(0.0, 1 - y * y));
+      final theta = i * 2.399963 + spin * math.pi * 2;
+      final z = math.sin(theta) * rad;
+      final x = math.cos(theta) * rad;
+      final persp = 1 / (2.1 - z);
+      final px = x * r * 0.78 * persp;
+      final py = y * r * 0.78 * persp;
+      final a = (0.15 + (z + 1) * 0.35).clamp(0.08, 0.85);
+      canvas.drawCircle(
+        Offset(px, py),
+        (speaking ? 1.35 : 1.0) * persp * 1.4,
+        Paint()..color = HudColors.amber.withValues(alpha: a),
       );
     }
 
     canvas.save();
-    canvas.rotate(-t * math.pi * 2 / 22);
-    canvas.drawCircle(
-      Offset.zero,
-      r * 0.82,
-      Paint()
-        ..style = PaintingStyle.stroke
-        ..color = HudColors.amberHot
-        ..strokeWidth = 1.4
-        ..strokeCap = StrokeCap.round,
-    );
-    canvas.restore();
-
+    canvas.rotate(spin * math.pi * 2);
     canvas.drawCircle(
       Offset.zero,
       r * 0.72,
@@ -190,96 +189,32 @@ class ArcReactorPainter extends CustomPainter {
         ..shader = SweepGradient(
           colors: const [HudColors.gold, HudColors.amberHot, HudColors.amber, HudColors.gold],
         ).createShader(Rect.fromCircle(center: Offset.zero, radius: r * 0.72))
-        ..strokeWidth = 7,
-    );
-
-    canvas.save();
-    canvas.rotate(t * math.pi * 2);
-    canvas.drawArc(
-      Rect.fromCircle(center: Offset.zero, radius: r * 0.58),
-      0,
-      math.pi * 1.4,
-      false,
-      Paint()
-        ..style = PaintingStyle.stroke
-        ..color = const Color(0xFFFF6A1A)
-        ..strokeWidth = 2
-        ..strokeCap = StrokeCap.square,
+        ..strokeWidth = speaking ? 8 : 5,
     );
     canvas.restore();
 
-    canvas.save();
-    canvas.rotate(t * math.pi * 2 / 18);
-    final hex = Path();
-    for (var i = 0; i < 6; i++) {
-      final a = (math.pi / 3) * i - math.pi / 2;
-      final p = Offset(math.cos(a) * r * 0.34, math.sin(a) * r * 0.34);
-      if (i == 0) {
-        hex.moveTo(p.dx, p.dy);
-      } else {
-        hex.lineTo(p.dx, p.dy);
-      }
-    }
-    hex.close();
-    canvas.drawPath(
-      hex,
-      Paint()
-        ..style = PaintingStyle.stroke
-        ..color = HudColors.cyan.withValues(alpha: 0.55)
-        ..strokeWidth = 1.2,
-    );
-    canvas.restore();
-
-    final sweep = (cpu.clamp(8, 100) / 100) * math.pi * 2;
-    canvas.drawArc(
-      Rect.fromCircle(center: Offset.zero, radius: r * 0.46),
-      -math.pi / 2,
-      sweep,
-      false,
-      Paint()
-        ..style = PaintingStyle.stroke
-        ..color = HudColors.cyan.withValues(alpha: 0.45)
-        ..strokeWidth = 9
-        ..strokeCap = StrokeCap.round,
-    );
-
-    canvas.save();
-    canvas.rotate(t * math.pi * 2 * 8 / 4.8);
-    canvas.drawPath(
-      Path()
-        ..moveTo(0, 0)
-        ..lineTo(0, -r * 0.82)
-        ..arcToPoint(
-          Offset(r * 0.42, -r * 0.7),
-          radius: Radius.circular(r * 0.82),
-        )
-        ..close(),
-      Paint()..color = HudColors.cyan.withValues(alpha: online ? 0.14 : 0.06),
-    );
-    canvas.restore();
-
-    final pulse = 0.85 + 0.15 * math.sin(t * math.pi * 2 * (online ? 1.4 : 0.7));
     canvas.drawCircle(
       Offset.zero,
-      r * 0.28 * pulse,
+      r * 0.22 * pulse,
       Paint()
         ..shader = RadialGradient(
           colors: [
-            const Color(0xFFE8FBFF),
-            HudColors.cyan,
-            const Color(0xFF0A3A4A),
+            const Color(0xFFFFF3D6),
+            HudColors.amber,
+            const Color(0xFF3A1408),
           ],
         ).createShader(Rect.fromCircle(center: Offset.zero, radius: r * 0.28)),
     );
-    canvas.drawCircle(Offset.zero, r * 0.14, Paint()..color = const Color(0xFF041018));
-    canvas.drawCircle(Offset.zero, r * 0.06, Paint()..color = HudColors.cyan);
 
     canvas.restore();
   }
 
   @override
   bool shouldRepaint(covariant ArcReactorPainter oldDelegate) =>
-      oldDelegate.t != t || oldDelegate.online != online || oldDelegate.cpu != cpu;
+      oldDelegate.t != t ||
+      oldDelegate.online != online ||
+      oldDelegate.cpu != cpu ||
+      oldDelegate.speaking != speaking;
 }
 
 class PanelClipper extends CustomClipper<Path> {
@@ -331,10 +266,17 @@ class HudPanel extends StatelessWidget {
 }
 
 class ArcReactor extends StatefulWidget {
-  const ArcReactor({super.key, required this.online, required this.cpu, this.size = 188});
+  const ArcReactor({
+    super.key,
+    required this.online,
+    required this.cpu,
+    this.speaking = false,
+    this.size = 188,
+  });
 
   final bool online;
   final double cpu;
+  final bool speaking;
   final double size;
 
   @override
@@ -348,6 +290,13 @@ class _ArcReactorState extends State<ArcReactor> with SingleTickerProviderStateM
   void initState() {
     super.initState();
     _spin = AnimationController(vsync: this, duration: const Duration(seconds: 8))..repeat();
+  }
+
+  @override
+  void didUpdateWidget(covariant ArcReactor oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    _spin.duration = Duration(milliseconds: widget.speaking ? 2200 : 8000);
+    if (!_spin.isAnimating) _spin.repeat();
   }
 
   @override
@@ -372,13 +321,14 @@ class _ArcReactorState extends State<ArcReactor> with SingleTickerProviderStateM
                 t: _spin.value,
                 online: widget.online,
                 cpu: widget.cpu,
+                speaking: widget.speaking,
               ),
             ),
           ),
           Positioned(
             bottom: 14,
             child: Text(
-              widget.online ? 'ONLINE' : 'STANDBY',
+              widget.speaking ? 'SPEAKING' : widget.online ? 'ONLINE' : 'STANDBY',
               style: hudDisplay(size: 9, color: HudColors.cyan, tracking: 3.4),
             ),
           ),

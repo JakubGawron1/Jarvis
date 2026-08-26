@@ -1,13 +1,14 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:math';
-import 'dart:typed_data';
 
 import 'package:audioplayers/audioplayers.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
 import 'hud_chrome.dart';
+import 'uplink.dart';
 
 void main() => runApp(const JarvisApp());
 
@@ -67,13 +68,13 @@ class HudPage extends StatefulWidget {
 
 class _HudPageState extends State<HudPage> {
   final _ctrl = TextEditingController();
-  final _urlCtrl = TextEditingController(text: 'ws://127.0.0.1:7420/ws');
   final _scroll = ScrollController();
   final _log = <_Msg>[
     const _Msg('sys', 'Interface online. Address me in Polish or English.'),
   ];
   WebSocketChannel? _ch;
   String _status = 'offline';
+  String _uplink = '—';
   String _leader = '—';
   String _io = '—';
   String _clock = '--:--:--';
@@ -82,8 +83,12 @@ class _HudPageState extends State<HudPage> {
   String _model = '—';
   String _version = '—';
   Timer? _clockTimer;
+  Timer? _retry;
   final _devices = <Map<String, dynamic>>[];
   var _alive = true;
+  var _linking = false;
+  var _speaking = false;
+  final _deviceId = 'flutter-${defaultTargetPlatform.name}-${DateTime.now().millisecondsSinceEpoch}';
   final _player = AudioPlayer();
 
   String _pad(int n) => n.toString().padLeft(2, '0');
@@ -96,85 +101,147 @@ class _HudPageState extends State<HudPage> {
     });
   }
 
-  void _connect() {
-    _ch?.sink.close();
-    try {
-      _ch = WebSocketChannel.connect(Uri.parse(_urlCtrl.text));
-      if (mounted) setState(() => _status = 'online');
-      _ch!.stream.listen((event) {
-        if (!_alive) return;
-        final m = jsonDecode(event as String) as Map<String, dynamic>;
-        final t = m['type'];
-        setState(() {
-          if (t == 'reply') {
-            _log.add(_Msg('jarvis', '${m['content']}'));
-          } else if (t == 'confirm') {
-            _log.add(_Msg('sys', 'CONFIRM: ${m['prompt']}'));
-          } else if (t == 'job_deferred') {
-            _log.add(_Msg('sys', '${m['message']}'));
-          } else if (t == 'presence') {
-            _leader = '${m['leader'] ?? '—'}';
-            _io = '${m['io_device'] ?? '—'}';
-            _devices
-              ..clear()
-              ..addAll(((m['devices'] as List?) ?? []).cast<Map<String, dynamic>>());
-          } else if (t == 'error') {
-            _log.add(_Msg('sys', 'error: ${m['message']}'));
-          } else if (t == 'stats') {
-            _cpu = (m['cpu'] as num?)?.toDouble() ?? 0;
-            final used = ((m['ram_used'] as num?) ?? 0) / 1e6;
-            final total = ((m['ram_total'] as num?) ?? 0) / 1e6;
-            _ram = '${used.round()} / ${total.round()} MB';
-            _model = '${m['model'] ?? '—'}';
-            _version = '${m['core_version'] ?? '—'}';
-          }
-        });
-        if (t == 'speech') {
-          final b64 = m['audio_b64'] as String?;
-          if (b64 != null) {
-            _playSpeech(b64, '${m['mime'] ?? 'audio/mpeg'}');
-          }
-        }
-        WidgetsBinding.instance.addPostFrameCallback((_) {
-          if (!mounted || !_scroll.hasClients) return;
-          _scroll.animateTo(
-            _scroll.position.maxScrollExtent,
-            duration: const Duration(milliseconds: 280),
-            curve: Curves.easeOut,
-          );
-        });
-      }, onDone: () {
-        if (!_alive) return;
-        setState(() => _status = 'offline');
-      }, onError: (_) {
-        if (!_alive) return;
-        setState(() => _status = 'offline');
-      });
-    } catch (e) {
-      if (!mounted) return;
+  void _listen(WebSocketChannel ch) {
+    ch.stream.listen((event) {
+      if (!_alive) return;
+      final m = jsonDecode(event as String) as Map<String, dynamic>;
+      final t = m['type'];
       setState(() {
-        _status = 'offline';
-        _log.add(_Msg('sys', '$e'));
+        if (t == 'reply') {
+          _log.add(_Msg('jarvis', '${m['content']}'));
+        } else if (t == 'confirm') {
+          _log.add(_Msg('sys', 'CONFIRM: ${m['prompt']}'));
+        } else if (t == 'job_deferred') {
+          _log.add(_Msg('sys', '${m['message']}'));
+        } else if (t == 'presence') {
+          _leader = '${m['leader'] ?? '—'}';
+          _io = '${m['io_device'] ?? '—'}';
+          _devices
+            ..clear()
+            ..addAll(((m['devices'] as List?) ?? []).cast<Map<String, dynamic>>());
+        } else if (t == 'error') {
+          _log.add(_Msg('sys', 'error: ${m['message']}'));
+        } else if (t == 'stats') {
+          _cpu = (m['cpu'] as num?)?.toDouble() ?? 0;
+          final used = ((m['ram_used'] as num?) ?? 0) / 1e6;
+          final total = ((m['ram_total'] as num?) ?? 0) / 1e6;
+          _ram = '${used.round()} / ${total.round()} MB';
+          _model = '${m['model'] ?? '—'}';
+          _version = '${m['core_version'] ?? '—'}';
+        }
       });
+      if (t == 'speech') {
+        final b64 = m['audio_b64'] as String?;
+        if (b64 != null) {
+          _playSpeech(b64, '${m['mime'] ?? 'audio/mpeg'}');
+        }
+      }
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted || !_scroll.hasClients) return;
+        _scroll.animateTo(
+          _scroll.position.maxScrollExtent,
+          duration: const Duration(milliseconds: 280),
+          curve: Curves.easeOut,
+        );
+      });
+    }, onDone: () {
+      if (!_alive) return;
+      setState(() => _status = 'offline');
+      _retry?.cancel();
+      _retry = Timer(const Duration(seconds: 3), _autoLink);
+    }, onError: (_) {
+      if (!_alive) return;
+      setState(() => _status = 'offline');
+      _retry?.cancel();
+      _retry = Timer(const Duration(seconds: 3), _autoLink);
+    });
+  }
+
+  Future<void> _autoLink() async {
+    if (!_alive || _linking) return;
+    _linking = true;
+    _ch?.sink.close();
+    _ch = null;
+    for (final url in [kLocalWs, kRenderWs]) {
+      if (!_alive) break;
+      try {
+        final ch = WebSocketChannel.connect(Uri.parse(url));
+        await ch.ready.timeout(Duration(seconds: isRenderUplink(url) ? 25 : 2));
+        if (!_alive) {
+          ch.sink.close();
+          break;
+        }
+        _ch = ch;
+        _listen(ch);
+        ch.sink.add(jsonEncode(withToken({
+          'type': 'hello',
+          'device': {
+            'id': _deviceId,
+            'name': 'Flutter',
+            'kind': defaultTargetPlatform == TargetPlatform.android
+                ? 'android'
+                : defaultTargetPlatform == TargetPlatform.linux
+                    ? 'linux_desktop'
+                    : 'windows',
+            'boot': null,
+            'caps': {
+              'llm_local': false,
+              'llm_online': true,
+              'tts': true,
+              'stt': false,
+              'tools_os': false,
+              'rewrite_core': false,
+              'pull_core': true,
+              'mic': true,
+              'speaker': true,
+            },
+            'core_version': '0.1.0',
+            'battery': null,
+          },
+        })));
+        if (mounted) {
+          setState(() {
+            _status = 'online';
+            _uplink = isRenderUplink(url) ? 'Render' : 'Local';
+            _log.add(_Msg('sys', 'Uplink: $_uplink'));
+          });
+        }
+        _linking = false;
+        return;
+      } catch (_) {
+        continue;
+      }
+    }
+    _linking = false;
+    if (mounted && _alive) {
+      setState(() => _status = 'offline');
+      _retry?.cancel();
+      _retry = Timer(const Duration(seconds: 4), _autoLink);
     }
   }
 
   Future<void> _playSpeech(String b64, String mime) async {
     try {
       final bytes = Uint8List.fromList(base64Decode(b64));
+      if (mounted) setState(() => _speaking = true);
       await _player.stop();
       await _player.play(BytesSource(bytes, mimeType: mime));
-    } catch (_) {}
+      await _player.onPlayerComplete.first.timeout(const Duration(seconds: 90), onTimeout: () {});
+    } catch (_) {
+    } finally {
+      if (mounted) setState(() => _speaking = false);
+    }
   }
 
   void _send(String text) {
     if (text.trim().isEmpty) return;
     setState(() => _log.add(_Msg('user', text)));
-    _ch?.sink.add(jsonEncode({
+    _ch?.sink.add(jsonEncode(withToken({
       'type': 'text',
       'id': Random().nextInt(1 << 30).toString(),
       'content': text,
-    }));
+      'device_id': _deviceId,
+    })));
     _ctrl.clear();
   }
 
@@ -183,19 +250,19 @@ class _HudPageState extends State<HudPage> {
     super.initState();
     _tickClock();
     _clockTimer = Timer.periodic(const Duration(seconds: 1), (_) => _tickClock());
-    _connect();
+    _autoLink();
   }
 
   @override
   void dispose() {
     _alive = false;
+    _retry?.cancel();
     _clockTimer?.cancel();
     _player.dispose();
     final ch = _ch;
     _ch = null;
     ch?.sink.close();
     _ctrl.dispose();
-    _urlCtrl.dispose();
     _scroll.dispose();
     super.dispose();
   }
@@ -239,8 +306,8 @@ class _HudPageState extends State<HudPage> {
                           io: _io,
                           leader: _leader,
                           devices: _devices,
-                          urlCtrl: _urlCtrl,
-                          onLink: _connect,
+                          uplink: _uplink,
+                          speaking: _speaking,
                           compact: !wide,
                         );
                         final chat = _ChatColumn(
@@ -326,8 +393,8 @@ class _ReactorColumn extends StatelessWidget {
     required this.io,
     required this.leader,
     required this.devices,
-    required this.urlCtrl,
-    required this.onLink,
+    required this.uplink,
+    required this.speaking,
     required this.compact,
   });
 
@@ -339,8 +406,8 @@ class _ReactorColumn extends StatelessWidget {
   final String io;
   final String leader;
   final List<Map<String, dynamic>> devices;
-  final TextEditingController urlCtrl;
-  final VoidCallback onLink;
+  final String uplink;
+  final bool speaking;
   final bool compact;
 
   @override
@@ -351,7 +418,7 @@ class _ReactorColumn extends StatelessWidget {
         child: compact
             ? Row(
                 children: [
-                  ArcReactor(online: online, cpu: cpu, size: 120),
+                  ArcReactor(online: online, cpu: cpu, speaking: speaking, size: 120),
                   const SizedBox(width: 12),
                   Expanded(child: SingleChildScrollView(child: _stats())),
                 ],
@@ -359,14 +426,8 @@ class _ReactorColumn extends StatelessWidget {
             : ListView(
                 children: [
                   Text('ARC REACTOR', style: hudDisplay()),
-                  Center(child: ArcReactor(online: online, cpu: cpu)),
+                  Center(child: ArcReactor(online: online, cpu: cpu, speaking: speaking)),
                   _stats(),
-                  const SizedBox(height: 10),
-                  Text('UPLINK', style: hudDisplay()),
-                  const SizedBox(height: 8),
-                  TextField(controller: urlCtrl, style: hudMono(size: 12)),
-                  const SizedBox(height: 8),
-                  _HudButton(label: 'Link', onPressed: onLink),
                 ],
               ),
       ),
@@ -407,6 +468,7 @@ class _ReactorColumn extends StatelessWidget {
         row('Core', version),
         row('I/O', io),
         row('Leader', leader),
+        row('Uplink', uplink),
         if (devices.isEmpty)
           Text('No active nodes', style: hudMono(size: 12, color: HudColors.amberHot))
         else

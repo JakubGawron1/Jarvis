@@ -47,10 +47,15 @@ impl HostOs {
 impl ToolHost {
     pub fn new(repo_root: PathBuf) -> Self {
         let vault = repo_root.join("vault");
+        let os = if std::env::var("JARVIS_KIND").ok().as_deref() == Some("cloud") {
+            HostOs::Cloud
+        } else {
+            HostOs::detect()
+        };
         Self {
             vault,
             repo_root,
-            os: HostOs::detect(),
+            os,
         }
     }
 
@@ -160,12 +165,26 @@ impl ToolHost {
     }
 
     fn open_app(&self, args: &str) -> Result<ToolResult> {
-        let app = args.trim();
-        let status = match self.os {
-            HostOs::Windows => Command::new("cmd")
-                .args(["/C", "start", "", app])
-                .spawn(),
-            HostOs::Linux | HostOs::Android => Command::new("xdg-open").arg(app).spawn(),
+        let raw = args.trim().trim_matches(|c: char| "\"'.".contains(c));
+        if raw.is_empty() {
+            return Ok(ToolResult {
+                ok: false,
+                output: "no app name".into(),
+                destructive: false,
+                needs_confirm: false,
+                confirm_prompt: None,
+            });
+        }
+        let target = resolve_app(raw);
+        let launched = match self.os {
+            HostOs::Windows => launch_windows(&target),
+            HostOs::Linux | HostOs::Android => Command::new("xdg-open")
+                .arg(&target)
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .map(|_| ()),
             HostOs::Cloud => {
                 return Ok(ToolResult {
                     ok: false,
@@ -176,11 +195,11 @@ impl ToolHost {
                 });
             }
         };
-        match status {
-            Ok(_) => Ok(ok(format!("launched {app}"))),
+        match launched {
+            Ok(()) => Ok(ok(format!("launched {target}"))),
             Err(e) => Ok(ToolResult {
                 ok: false,
-                output: e.to_string(),
+                output: format!("could not launch {target}: {e}"),
                 destructive: false,
                 needs_confirm: false,
                 confirm_prompt: None,
@@ -217,5 +236,85 @@ fn ok(output: impl Into<String>) -> ToolResult {
         destructive: false,
         needs_confirm: false,
         confirm_prompt: None,
+    }
+}
+
+fn resolve_app(name: &str) -> String {
+    let n = name
+        .trim()
+        .trim_matches(|c: char| "\"'.".contains(c))
+        .to_lowercase();
+    match n.as_str() {
+        "notepad" | "notatnik" | "notes" => "notepad.exe".into(),
+        "calc" | "kalkulator" | "calculator" => "calc.exe".into(),
+        "explorer" | "pliki" | "files" | "folder" => "explorer.exe".into(),
+        "cmd" | "terminal" | "konsola" => "cmd.exe".into(),
+        "powershell" | "ps" => "powershell.exe".into(),
+        "settings" | "ustawienia" => "ms-settings:".into(),
+        "paint" | "mspaint" => "mspaint.exe".into(),
+        "chrome" | "google chrome" | "google-chrome" => {
+            chrome_path().unwrap_or_else(|| "chrome".into())
+        }
+        "edge" | "msedge" => "msedge.exe".into(),
+        "firefox" => "firefox.exe".into(),
+        "spotify" => "spotify:".into(),
+        "code" | "vscode" | "visual studio code" => "code".into(),
+        "discord" => "discord".into(),
+        "steam" => "steam://".into(),
+        other => other.trim().to_string(),
+    }
+}
+
+fn chrome_path() -> Option<String> {
+    let local = std::env::var("LOCALAPPDATA").ok()?;
+    let p = PathBuf::from(local).join("Google/Chrome/Application/chrome.exe");
+    p.is_file().then(|| p.to_string_lossy().into_owned())
+}
+
+fn launch_windows(target: &str) -> std::io::Result<()> {
+    let ps = if target.contains(':') && !target.ends_with(".exe") {
+        format!("Start-Process '{}'", target.replace('\'', "''"))
+    } else {
+        format!("Start-Process -FilePath '{}'", target.replace('\'', "''"))
+    };
+    let mut cmd = Command::new("powershell");
+    cmd.args(["-NoProfile", "-NonInteractive", "-Command", &ps])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    hide_window(&mut cmd);
+    match cmd.spawn() {
+        Ok(_) => Ok(()),
+        Err(_) => {
+            let mut start = Command::new("cmd");
+            start
+                .args(["/C", "start", "", target])
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null());
+            hide_window(&mut start);
+            start.spawn().map(|_| ())
+        }
+    }
+}
+
+fn hide_window(cmd: &mut Command) {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    let _ = cmd;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn maps_polish_notepad() {
+        assert_eq!(resolve_app("notatnik"), "notepad.exe");
+        assert_eq!(resolve_app("kalkulator"), "calc.exe");
     }
 }

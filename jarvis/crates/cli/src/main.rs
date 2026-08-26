@@ -83,6 +83,7 @@ async fn main() -> anyhow::Result<()> {
                     id: Uuid::new_v4().to_string(),
                     content,
                     lang: None,
+                    device_id: None,
                 },
             )
             .await?;

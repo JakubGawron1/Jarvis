@@ -190,14 +190,21 @@ impl Agent {
                 }
             }
             ClientMessage::DismissVisual {} => vec![],
-            ClientMessage::Text { id, content, lang } => {
+            ClientMessage::Text { id, content, lang, device_id } => {
+                if let Some(d) = device_id {
+                    self.mesh.claim_io(&d);
+                }
                 self.handle_user_text(id, content, lang).await
             }
             ClientMessage::Utterance {
                 id,
                 transcript,
                 audio_b64: _,
+                device_id,
             } => {
+                if let Some(d) = device_id {
+                    self.mesh.claim_io(&d);
+                }
                 let content = transcript.unwrap_or_default();
                 self.handle_user_text(id, content, None).await
             }
@@ -375,12 +382,27 @@ fn heuristic_tool(content: &str) -> Option<(String, String)> {
     if c.contains("kalendarz") || c.contains("calendar") || c.contains("wydarzen") {
         return Some(("calendar_add".into(), content.to_string()));
     }
-    if c.contains("otwórz") || c.contains("otworz") || c.contains("open ") {
+    if c.contains("otwórz")
+        || c.contains("otworz")
+        || c.contains("uruchom")
+        || c.contains("włącz")
+        || c.contains("wlacz")
+        || c.contains("odpal")
+        || c.contains("open ")
+        || c.contains("launch ")
+        || c.starts_with("start ")
+    {
         let app = content
             .split_once("otwórz")
             .or_else(|| content.split_once("otworz"))
+            .or_else(|| content.split_once("uruchom"))
+            .or_else(|| content.split_once("włącz"))
+            .or_else(|| content.split_once("wlacz"))
+            .or_else(|| content.split_once("odpal"))
+            .or_else(|| content.split_once("launch "))
             .or_else(|| content.split_once("open "))
-            .map(|(_, r)| r.trim().to_string())
+            .or_else(|| content.split_once("start "))
+            .map(|(_, r)| r.trim().trim_matches(|ch: char| ch == '.' || ch == '!' || ch == '?').to_string())
             .unwrap_or_else(|| content.to_string());
         return Some(("open_app".into(), app));
     }

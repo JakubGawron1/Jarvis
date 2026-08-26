@@ -214,6 +214,9 @@ pub enum ClientMessage {
         content: String,
         #[serde(default)]
         lang: Option<Lang>,
+        /// Client that typed this — I/O follows the speaker.
+        #[serde(default)]
+        device_id: Option<String>,
     },
     Utterance {
         id: String,
@@ -221,6 +224,8 @@ pub enum ClientMessage {
         transcript: Option<String>,
         #[serde(default)]
         audio_b64: Option<String>,
+        #[serde(default)]
+        device_id: Option<String>,
     },
     Confirm {
         id: String,
@@ -337,6 +342,7 @@ mod tests {
             id: "1".into(),
             content: "hi".into(),
             lang: Some(Lang::En),
+            device_id: None,
         };
         let s = serde_json::to_string(&m).unwrap();
         let back = ClientMessage::parse(&s).unwrap();

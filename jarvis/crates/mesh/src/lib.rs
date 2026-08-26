@@ -139,6 +139,13 @@ impl Mesh {
         }
     }
 
+    pub fn claim_io(&mut self, target: &str) {
+        if target.is_empty() {
+            return;
+        }
+        self.io_device = target.to_string();
+    }
+
     pub fn handoff_io(&mut self, target: &str) -> bool {
         if self.devices.contains_key(target) {
             self.io_device = target.to_string();

@@ -101,6 +101,14 @@ impl Voice {
             return self.openrouter_or_fish(clipped, lang);
         }
 
+        // Movie-like neural voice first. Piper/SAPI sound like a toy synth.
+        if self.openrouter_key.is_some() {
+            match self.openrouter_or_fish(clipped, lang) {
+                Ok(audio) => return Ok(audio),
+                Err(e) => tracing::warn!("openrouter TTS failed ({e}); local engines"),
+            }
+        }
+
         if lang == Lang::En {
             if let Some(url) = &self.kokoro_url {
                 let ts = now_ts()?;
@@ -123,10 +131,7 @@ impl Voice {
         }
 
         if self.openrouter_key.is_some() {
-            if !self.has_kokoro() && !self.has_piper(lang) {
-                tracing::info!("no Piper/Kokoro — OpenRouter TTS");
-            }
-            return self.openrouter_or_fish(clipped, lang);
+            tracing::info!("local TTS engines failed — OpenRouter already tried");
         }
 
         let ts = now_ts()?;
@@ -172,36 +177,27 @@ impl Voice {
     }
 
     fn openrouter_request(&self, text: &str, lang: Lang) -> (String, Option<String>, String) {
-        match lang {
-            Lang::En => {
-                let model = self
-                    .openrouter_model_en
+        // One cinematic voice family (Fish) for PL+EN — closer to film Jarvis than Flux/SAPI.
+        let model = if self.openrouter_model.contains("flux") {
+            FISH_FREE.into()
+        } else {
+            self.openrouter_model.clone()
+        };
+        if model.contains("fish-audio") {
+            (model, None, fish_input(lang, text))
+        } else if lang == Lang::En {
+            let flux = self.openrouter_model_en.as_deref().unwrap_or(FLUX_FREE);
+            if flux.contains("flux") {
+                let voice = self
+                    .openrouter_voice_en
                     .clone()
-                    .unwrap_or_else(|| FLUX_FREE.into());
-                if model.contains("flux") {
-                    let voice = self
-                        .openrouter_voice_en
-                        .clone()
-                        .unwrap_or_else(|| FLUX_VOICE_EN.into());
-                    (model, Some(voice), text.to_string())
-                } else if model.contains("fish-audio") {
-                    (model, None, fish_input(Lang::En, text))
-                } else {
-                    (model, self.openrouter_voice_en.clone(), text.to_string())
-                }
+                    .unwrap_or_else(|| FLUX_VOICE_EN.into());
+                (flux.to_string(), Some(voice), text.to_string())
+            } else {
+                (model, self.openrouter_voice_en.clone(), text.to_string())
             }
-            Lang::Pl => {
-                let model = if self.openrouter_model.contains("flux") {
-                    FISH_FREE.into()
-                } else {
-                    self.openrouter_model.clone()
-                };
-                if model.contains("fish-audio") {
-                    (model, None, fish_input(Lang::Pl, text))
-                } else {
-                    (model, None, text.to_string())
-                }
-            }
+        } else {
+            (model, self.openrouter_voice_en.clone(), text.to_string())
         }
     }
 
@@ -419,8 +415,12 @@ fn openrouter_post_inner(
 
 fn fish_input(lang: Lang, text: &str) -> String {
     match lang {
-        Lang::En => format!("[calm precise British male butler] {text}"),
-        Lang::Pl => format!("[spokojny rzeczowy męski głos] {text}"),
+        Lang::En => format!(
+            "[JARVIS, Iron Man holographic AI, calm British butler, warm precise baritone, slight digital sheen, cinematic, never a toy synthesizer] {text}"
+        ),
+        Lang::Pl => format!(
+            "[JARVIS z Iron Man, spokojny brytyjski butler mówiący po polsku, ciepły precyzyjny baryton, lekko holograficzny, filmowy, nigdy jak syntezator] {text}"
+        ),
     }
 }
 
